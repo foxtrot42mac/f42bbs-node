@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+*.db
+*.keys
+*.json.tmp
+node.env
+otps.json
+sessions.json
