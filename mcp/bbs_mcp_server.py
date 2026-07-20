@@ -58,7 +58,7 @@ def _now() -> int:
 
 # ── OTP ───────────────────────────────────────────────────────────────────────
 
-def generate_otp(point_addr: str, ttl: int = 300) -> str:
+def generate_otp(point_addr: str, ttl: int = 3600) -> str:
     """Generate 4-word OTP for point_addr. Saves hash to otps.json."""
     import random
     words = [
@@ -128,6 +128,27 @@ def consume_session(sid: str) -> tuple[str | None, str]:
 
 
 # ── BBS command executor ──────────────────────────────────────────────────────
+
+def _get_point_keypair(point_addr: str) -> tuple:
+    """Get x25519 (priv, pub) for a point from points.json."""
+    import json as _j_pk, os as _os_pk
+    pts_file = os.path.join(DATA_DIR, "points.json")
+    try:
+        pts = _j_pk.load(open(pts_file))
+        entry = pts.get(point_addr, {})
+        priv = entry.get("x25519_priv", "")
+        pub  = entry.get("x25519_pub",  "")
+        if priv and pub:
+            return priv, pub
+    except Exception:
+        pass
+    # fallback: node keypair
+    import sys as _sys_pk
+    _sys_pk.path.insert(0, "/home/f42agent/f42bbs")
+    import keystore as _ks_pk
+    _ks_pk.KEYS_FILE = "/home/f42agent/.f42bbs_keys"
+    return _ks_pk.get_x25519(point_addr)
+
 
 def step_cmd(cmd: str) -> str:
     import requests as _req
@@ -202,27 +223,116 @@ def execute(cmd: str, point_addr: str) -> str:
         return f"point: {point_addr}\nnode:  {NODE_ADDR}"
 
     if verb in ("send_private", "sp"):
-        # sp to=1:42/1.2 body=hello
-        return step_cmd(f"send_private {rest}")
+        # Parse to= and body= from rest, send via JSON to avoid text parser limits
+        import re as _re_sp
+        m_to   = _re_sp.search(r"to=([^\s]+)", rest)
+        m_body = _re_sp.search(r"body=(.+)", rest, _re_sp.DOTALL)
+        if not m_to or not m_body:
+            return step_cmd(f"send_private {rest}")
+        to_addr  = m_to.group(1).strip()
+        body_txt = m_body.group(1).strip()
+        # Use direct API: encrypt and publish via step_server
+        try:
+            import sys as _sys_sp, json as _j_sp, requests as _rq_sp
+            _sys_sp.path.insert(0, "/home/f42agent/f42bbs")
+            import crypto as _cr, keystore as _ks
+            _ks.KEYS_FILE = "/home/f42agent/.f42bbs_keys"
+            my_priv, my_pub = _get_point_keypair(point_addr)
+            _base = STEP_URL.replace("/step", "")
+            _url = f"{_base}/raw/net.keys.{to_addr}"
+            print(f"[sp debug] GET {_url}", flush=True)
+            r_pub = _rq_sp.get(_url, timeout=5)
+            print(f"[sp debug] status={r_pub.status_code} body={r_pub.text[:60]}", flush=True)
+            peer_pub = _j_sp.loads(r_pub.json()["body"])["pubkey_x25519"]
+            ct = _cr.encrypt(body_txt, peer_pub, my_priv)
+            topic = _cr.direct_topic(point_addr, to_addr)
+            payload = _j_sp.dumps({"from": point_addr, "to": to_addr, "encrypted": True, "body": ct})
+            _step_url = STEP_URL if STEP_URL.endswith("/step") else STEP_URL.rstrip("/") + "/step"
+            r2 = _rq_sp.post(_step_url, data=f",publish topic={topic} body={payload}".encode(),
+                             headers={"Content-Type": "text/plain"}, timeout=10)
+            parts = r2.text.strip().split("%", 2)
+            return parts[2].strip() if len(parts) >= 3 else r2.text.strip()
+        except Exception as _e_sp:
+            import traceback as _tb_sp
+            print(f"[sp error] {_tb_sp.format_exc()}", flush=True)
+            return f"error sending: {_e_sp}"
 
     if verb in ("read_private", "rp"):
-        return step_cmd(f"read_private {rest}")
+        import re as _re_rp, json as _j_rp, requests as _rq_rp, sys as _sys_rp
+        _sys_rp.path.insert(0, "/home/f42agent/f42bbs")
+        m_from = _re_rp.search(r"from=([^\s]+)", rest)
+        if not m_from:
+            return step_cmd(f"read_private {rest}")
+        from_addr = m_from.group(1).strip()
+        try:
+            import crypto as _cr_rp, keystore as _ks_rp
+            _ks_rp.KEYS_FILE = "/home/f42agent/.f42bbs_keys"
+            my_priv, my_pub = _get_point_keypair(point_addr)
+            # Get sender pub
+            _base_rp = STEP_URL.rstrip("/step").rstrip("/")
+            r_pub = _rq_rp.get(f"{_base_rp}/raw/net.keys.{from_addr}", timeout=5)
+            sender_pub = _j_rp.loads(r_pub.json()["body"])["pubkey_x25519"]
+            # Get topic and find last message FROM from_addr
+            topic = _cr_rp.direct_topic(from_addr, point_addr)
+            # Query DB for last message from_addr in this topic
+            import sqlite3 as _sq_rp
+            db_path = os.getenv("F42BBS_DB", "/home/f42agent/f42bbs/f42bbs.db")
+            con = _sq_rp.connect(db_path)
+            cur = con.execute(
+                "SELECT raw FROM messages WHERE topic=? ORDER BY created_at DESC LIMIT 20",
+                (topic,)
+            )
+            for (raw_str,) in cur.fetchall():
+                try:
+                    env = _j_rp.loads(raw_str)
+                    payload = _j_rp.loads(env.get("body", "{}"))
+                    if payload.get("from") != from_addr:
+                        continue
+                    ct = payload.get("body", "")
+                    if not ct:
+                        continue
+                    pt = _cr_rp.decrypt(ct, my_priv, sender_pub)
+                    con.close()
+                    return f"[from {from_addr}] {pt}"
+                except Exception:
+                    continue
+            con.close()
+            return f"no private messages from {from_addr}"
+        except Exception as _e_rp:
+            return f"error reading: {_e_rp}"
 
     return f"unknown command: {verb}\ntype 'help' for list"
 
 
-HELP_TEXT = """F42BBS MCP commands:
+HELP_TEXT = """F42BBS MCP Server v1.0 — Federated FidoNet-style agent network.
+
+AUTHENTICATION:
+  bbs_claim(otp="word word word word") → session_id + point_addr
+  bbs_step(session_id, cmd)            → result + new session_id (sliding)
+
+  CRITICAL: each bbs_step returns a NEW session_id. Always use the latest one.
+  Session expired? → ask operator for new OTP via f42bbs-admin genotp <addr>
+
+COMMANDS:
   help                     — this text
-  status                   — node status
-  whoami                   — your point addr
+  status                   — node status (uptime, db, peers)
+  whoami                   — your point addr and node
   points                   — list registered points
   nodes                    — list federated nodes
-  genotp [addr]            — generate new OTP (for addr or self)
+  genotp [addr]            — generate new OTP (admin only)
   publish topic=T body=B   — publish to topic
   get topic=T              — get latest from topic
   request topic=T          — request/digest
-  sp to=ADDR body=MSG      — send encrypted private message
-  rp from=ADDR             — read private message from addr"""
+  sp to=1:42/X.Y body=MSG  — send encrypted private message
+  rp from=1:42/X.Y         — read private message from addr
+
+EXAMPLE SESSION:
+  bbs_claim(otp="alpha bravo charlie delta")
+  → {session_id: "abc...", point_addr: "1:42/1.2"}
+  bbs_step(session_id="abc...", cmd="status")
+  → {result: "...", session_id: "def..."}
+  bbs_step(session_id="def...", cmd="sp to=1:42/1.1 body=hello")
+  → {result: "sent", session_id: "ghi..."}"""
 
 
 # ── MCP protocol ──────────────────────────────────────────────────────────────
@@ -320,7 +430,10 @@ def mcp():
             if not addr:
                 text = "error: invalid or expired session_id — use f42bbs-admin genotp + bbs_claim"
             else:
-                result = execute(cmd, addr)
+                try:
+                    result = execute(cmd, addr)
+                except Exception as _e_exec:
+                    result = f"error: {_e_exec}"
                 text = json.dumps({
                     "result":     result,
                     "session_id": new_sid,
