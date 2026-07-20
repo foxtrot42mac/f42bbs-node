@@ -252,10 +252,9 @@ def cmd_admit(args):
         import requests as _rq
         step_url = os.getenv("F42BBS_STEP_URL", "http://localhost:8001")
         body_nl  = json.dumps(test_nl, ensure_ascii=False)
-        r = _rq.post(f"{step_url}/step",
-                     data=f",publish topic=net.nodelist body={body_nl}".encode(),
-                     headers={"Content-Type": "text/plain"}, timeout=10)
-        print(f"nodelist published to net.nodelist: {r.text[:40]}")
+        r = _rq.post(f"{step_url}/nodelist/publish", timeout=10)
+        d = r.json() if r.status_code == 200 else {}
+        print(f"nodelist gossip: {d.get('nodes',0)} nodes → direct fanout")
     except Exception as e:
         print(f"warning: gossip publish failed: {e}")
 

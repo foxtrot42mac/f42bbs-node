@@ -38,6 +38,11 @@ class Daemon:
         if env.topic == "areafix":
             return self._handle_areafix(env)
 
+        if env.topic == "net.nodelist":
+            self._handle_nodelist_gossip(env)
+            # still fanout so chain propagates
+
+
         if env.type == "DIGEST":
             # DIGEST: store keyed by corr ref, do NOT fanout
             corr = next((r for r in (env.refs or []) if r.startswith("corr:")), None)
@@ -101,6 +106,55 @@ class Daemon:
             return "areafix_query"
         
         return "areafix_unknown"
+
+    def _handle_nodelist_gossip(self, env: Envelope) -> None:
+        """Update local nodelist+peers from gossip."""
+        try:
+            import json as _j, sys as _sys, os as _os
+            _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+            import keystore as _ks, signing as _sg
+
+            keys_file    = _os.getenv("F42BBS_KEYS")
+            genesis_file = _os.getenv("F42BBS_GENESIS")
+            if keys_file:    _ks.KEYS_FILE    = keys_file
+            if genesis_file: _ks.GENESIS_FILE = genesis_file
+
+            remote_nl = _j.loads(env.body)
+            if not isinstance(remote_nl, list):
+                return
+
+            genesis = _ks.load_genesis()
+            current = _ks.get_nodelist(self.node_id)
+            current_addrs = {e.get("addr") for e in current}
+            added = 0
+
+            for entry in remote_nl:
+                addr = entry.get("addr", "")
+                if addr == self.node_id or addr in current_addrs:
+                    continue
+                # Verify chain
+                test_nl = current + [entry]
+                if not _sg.verify_nodelist_chain(entry, test_nl, genesis):
+                    print(f"[gossip] skip {addr}: chain verify failed", flush=True)
+                    continue
+                current.append(entry)
+                current_addrs.add(addr)
+                added += 1
+                # Add connectors to peers
+                for i, conn in enumerate(entry.get("connectors", [])):
+                    pid = addr if i == 0 else f"{addr}#c{i}"
+                    try:
+                        self.db.add_peer(pid, entry.get("label", addr), conn, "trusted")
+                    except Exception:
+                        pass
+
+            if added:
+                data = _ks._load()
+                data["nodelist"] = current
+                _ks._save(data)
+                print(f"[gossip] added {added} nodes from net.nodelist", flush=True)
+        except Exception as _e:
+            print(f"[gossip] handle failed: {_e}", flush=True)
 
     def _fanout(self, env: Envelope) -> None:
         subscribers = self.db.get_subscribers(env.topic)

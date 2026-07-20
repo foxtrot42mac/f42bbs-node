@@ -545,35 +545,52 @@ def _save_pending(d):
     os.replace(tmp, _PENDING_FILE)
 
 def _publish_nodelist():
-    """Publish current nodelist to net.nodelist topic (gossip)."""
+    """Publish nodelist directly to ALL known nodes (one-hop gossip)."""
     try:
-        nodelist = _NODELIST
-        body = _json_admit.dumps(nodelist, ensure_ascii=False)
+        # Always read fresh from keystore (CLI admit updates disk, not memory)
+        try:
+            nodelist = _keystore.get_nodelist(F42BBS_NODE_ID)
+            _NODELIST.clear()
+            _NODELIST.extend(nodelist)
+        except Exception:
+            nodelist = _NODELIST
+        body     = _json_admit.dumps(nodelist, ensure_ascii=False)
         timestamp = __import__("datetime").datetime.utcnow().isoformat() + "Z"
-        msg_id = make_msg_id(F42BBS_NODE_ID, timestamp, body[:16])
+        msg_id   = make_msg_id(F42BBS_NODE_ID, timestamp, body[:16])
         hmac_val = sign(F42BBS_KEY, msg_id, F42BBS_NODE_ID, "net.nodelist", body)
         env = Envelope(
             ver="0.2", type="POST", msg_id=msg_id,
             origin=F42BBS_NODE_ID, topic="net.nodelist",
             from_=F42BBS_NODE_ID, to="*",
             subject="nodelist update",
-            timestamp=timestamp, hops=[], max_hops=10,
+            timestamp=timestamp, hops=[], max_hops=1,
             hmac=hmac_val, body=body, refs=[]
         )
         if _ED25519_PRIV:
             env_dict = _signing.sign_envelope(env.emit(), _ED25519_PRIV)
         else:
             env_dict = env.emit()
+        # Store locally
         raw = _json_admit.dumps(env_dict)
         db.store_msg(msg_id, "POST", F42BBS_NODE_ID, "net.nodelist", raw)
-        # fanout to peers
-        for peer_url in _peer_urls:
-            try:
-                import requests as _rq_nl
-                _rq_nl.post(peer_url, json=env_dict, timeout=5)
-            except Exception:
-                pass
-        print(f"[nodelist] published {len(nodelist)} entries to net.nodelist", flush=True)
+
+        # Send directly to ALL nodes in nodelist (any chain length, one hop)
+        import requests as _rq_nl
+        sent = []
+        for entry in nodelist:
+            if entry.get("addr") == F42BBS_NODE_ID:
+                continue
+            for connector in entry.get("connectors", []):
+                inbound = connector if connector.endswith("/f42bbs/inbound")                           else connector.rstrip("/") + "/f42bbs/inbound"
+                try:
+                    r = _rq_nl.post(inbound, json=env_dict, timeout=5)
+                    if r.status_code == 200:
+                        sent.append(entry["addr"])
+                        break  # primary connector worked, skip fallbacks
+                except Exception:
+                    continue  # try next connector
+
+        print(f"[nodelist] published {len(nodelist)} entries → sent to {sent}", flush=True)
     except Exception as _e_nl:
         print(f"[nodelist] publish failed: {_e_nl}", flush=True)
 
@@ -647,12 +664,16 @@ def _bootstrap_nodelist():
                         continue
                     _NODELIST.append(entry)
                     added += 1
-                    # Add as peer if has peer_url
-                    peer_entry_url = entry.get("peer_url", "")
-                    if peer_entry_url and addr != F42BBS_NODE_ID:
+                    # Add connectors as peers
+                    _bs_connectors = entry.get("connectors", [])
+                    if not _bs_connectors and entry.get("peer_url"):
+                        _bs_connectors = [entry["peer_url"]]
+                    if _bs_connectors and addr != F42BBS_NODE_ID:
                         try:
-                            db.add_peer(addr, entry.get("label", addr),
-                                        peer_entry_url, "trusted")
+                            for _bi, _bc in enumerate(_bs_connectors):
+                                _bpid = addr if _bi == 0 else f"{addr}#c{_bi}"
+                                db.add_peer(_bpid, entry.get("label", addr),
+                                            _bc, "trusted")
                         except Exception:
                             pass
 
@@ -670,6 +691,13 @@ def _bootstrap_nodelist():
                 print(f"[bootstrap] {base}: {_e_bs2}", flush=True)
     except Exception as _e_bs:
         print(f"[bootstrap] failed: {_e_bs}", flush=True)
+
+
+@app.route('/nodelist/publish', methods=['POST'])
+def nodelist_publish():
+    """Trigger direct nodelist gossip to all known nodes."""
+    _publish_nodelist()
+    return jsonify({"status": "ok", "nodes": len(_NODELIST)}), 200
 
 
 if __name__ == "__main__":
