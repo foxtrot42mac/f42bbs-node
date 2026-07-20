@@ -380,12 +380,18 @@ def admit():
         addr       = data.get("addr", "").strip()
         ed_pub     = data.get("ed25519_pub", "").strip()
         x_pub      = data.get("x25519_pub", "").strip()
-        peer_url   = data.get("peer_url", "").strip()
         label      = data.get("label", addr)
+        # connectors: list of inbound URLs, legacy peer_url also accepted
+        connectors = data.get("connectors", [])
+        peer_url   = data.get("peer_url", "").strip()
+        if peer_url and peer_url not in connectors:
+            connectors.insert(0, peer_url)
+        if not connectors:
+            peer_url = ""
 
-        if not addr or not ed_pub or not x_pub or not peer_url:
+        if not addr or not ed_pub or not x_pub or not connectors:
             return jsonify({"status": "rejected",
-                            "reason": "addr, ed25519_pub, x25519_pub, peer_url required"}), 400
+                            "reason": "addr, ed25519_pub, x25519_pub, connectors required"}), 400
 
         # Check if already in nodelist
         existing = next((e for e in _NODELIST if e.get("addr") == addr), None)
@@ -397,16 +403,22 @@ def admit():
         pending = _load_pending()
         pending[addr] = {
             "addr": addr, "ed25519_pub": ed_pub, "x25519_pub": x_pub,
-            "peer_url": peer_url, "label": label,
+            "connectors": connectors,
+            "peer_url": connectors[0],  # primary for legacy compat
+            "label": label,
             "ts": __import__("datetime").datetime.utcnow().isoformat() + "Z"
         }
         _save_pending(pending)
-        print(f"[admit] pending: {addr} ({label}) peer={peer_url}", flush=True)
+        print(f"[admit] pending: {addr} ({label}) connectors={connectors}", flush=True)
+
+        # Our own connectors from env
+        _my_connectors = [u.strip() for u in os.getenv("F42BBS_CONNECTORS", "").split(",") if u.strip()]
 
         return jsonify({
             "status": "pending",
             "reason": f"admission request saved, await admin approval: f42bbs-admin admit {addr}",
             "node": F42BBS_NODE_ID,
+            "connectors": _my_connectors,
             "genesis": _GENESIS,
             "nodelist": _NODELIST,
         }), 202

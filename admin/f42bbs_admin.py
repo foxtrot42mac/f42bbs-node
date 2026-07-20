@@ -199,11 +199,14 @@ def cmd_admit(args):
     # Root signs the entry
     root_priv, root_pub = keystore.get_ed25519(NODE_ADDR)
 
+    connectors = entry.get("connectors", [])
+    if not connectors and entry.get("peer_url"):
+        connectors = [entry["peer_url"]]
     signed_entry = signing.sign_nodelist_entry({
         "addr":         addr,
         "ed25519_pub":  entry["ed25519_pub"],
         "x25519_pub":   entry["x25519_pub"],
-        "peer_url":     entry.get("peer_url", ""),
+        "connectors":   connectors,
         "label":        entry.get("label", addr),
         "sponsor_addr": NODE_ADDR,
     }, root_priv)
@@ -228,8 +231,11 @@ def cmd_admit(args):
         import sqlite3
         db_path = os.getenv("F42BBS_DB", "/var/lib/f42bbs/db/f42bbs.db")
         con = sqlite3.connect(db_path)
-        con.execute("INSERT OR REPLACE INTO peers (node_id, name, address, trust) VALUES (?,?,?,?)",
-                    (addr, entry.get("label", addr), entry.get("peer_url", ""), "trusted"))
+        _conn = entry.get("connectors", []) or [entry.get("peer_url","")]
+        for i, curl in enumerate(_conn):
+            pid = addr if i == 0 else f"{addr}#c{i}"
+            con.execute("INSERT OR REPLACE INTO peers (node_id, name, address, trust) VALUES (?,?,?,?)",
+                        (pid, entry.get("label", addr), curl, "trusted"))
         con.commit()
         con.close()
         print(f"peer {addr} added to DB")

@@ -91,6 +91,7 @@ F42BBS_GENESIS=$DATA_DIR/keys/genesis.json
 F42BBS_STEP_URL=http://localhost:$STEP_PORT
 BBS_MCP_PORT=$MCP_PORT
 BBS_MCP_PATH=/bbs-mcp
+F42BBS_CONNECTORS=
 ENVEOF
 chmod 640 "$DATA_DIR/node.env"
 chown "$SVC_USER:$SVC_USER" "$DATA_DIR/node.env"
