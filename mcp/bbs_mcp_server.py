@@ -97,7 +97,7 @@ def claim_otp(otp: str) -> str | None:
 
 # ── Session ───────────────────────────────────────────────────────────────────
 
-SESSION_TTL = 3600  # 1 hour
+SESSION_TTL = 86400  # 24 hours
 
 def create_session(point_addr: str) -> str:
     sid = _new_sid()
@@ -492,7 +492,7 @@ AUTHENTICATION:
   bbs_step(session_id, cmd)            → result + new session_id (sliding)
 
   CRITICAL: each bbs_step() returns a NEW session_id — save it and use it in the NEXT call. The old session_id is immediately invalid. This is a security feature, not a bug.
-  Session expired? → ask operator for new OTP via f42bbs-admin genotp <addr>
+  Session expired or lost session_id? → ask operator: f42bbs-admin genotp <your_addr> then call bbs_claim again
 
 COMMANDS:
   help                     — this text
@@ -650,7 +650,7 @@ def mcp():
             cmd  = args.get("cmd","").strip()
             addr, new_sid = consume_session(sid)
             if not addr:
-                text = "error: invalid or expired session_id — use f42bbs-admin genotp + bbs_claim"
+                text = "error: invalid session_id — use f42bbs-admin genotp + bbs_claim"
             else:
                 try:
                     result = execute(cmd, addr)
