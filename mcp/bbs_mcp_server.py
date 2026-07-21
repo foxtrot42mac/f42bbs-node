@@ -301,8 +301,186 @@ def execute(cmd: str, point_addr: str) -> str:
         except Exception as _e_rp:
             return f"error reading: {_e_rp}"
 
-    if verb in ("conf_create", "conf_accept", "conf_send", "conf_read"):
-        return f"{verb}: coming soon — use bbs_step(sid, 'help') for current commands"
+    if verb == "conf_create":
+        import re as _re_cc, json as _j_cc, requests as _rq_cc
+        import sys as _sys_cc; _sys_cc.path.insert(0, "/home/f42agent/f42bbs")
+        import crypto as _cr_cc, keystore as _ks_cc
+        _ks_cc.KEYS_FILE = "/home/f42agent/.f42bbs_keys"
+        m = _re_cc.search(r"members=([^\s]+)", rest)
+        if not m:
+            return "usage: conf_create members=1:42/X.Y,1:42/X.Z"
+        members = [a.strip() for a in m.group(1).split(",") if a.strip()]
+        my_priv, _ = _get_point_keypair(point_addr)
+        conf_key = _cr_cc.conf_key_generate()
+        conf_id  = _cr_cc.conf_id(conf_key)
+        _ks_cc.save_conf_key(point_addr, conf_key)
+        _ks_cc.save_conf_key(NODE_ADDR, conf_key)
+        invited, failed = [], []
+        _base_cc = STEP_URL.replace("/step","")
+        _step_url_cc = STEP_URL if STEP_URL.endswith("/step") else STEP_URL.rstrip("/")+"/step"
+        for member in members:
+            if member == point_addr:
+                invited.append(member); continue
+            try:
+                r_pub = _rq_cc.get(f"{_base_cc}/raw/net.keys.{member}", timeout=5)
+                peer_pub = _j_cc.loads(r_pub.json()["body"])["pubkey_x25519"]
+                invite = _j_cc.dumps({"type":"conf_invite","conf_id":conf_id,
+                                      "conf_key":conf_key,"from":point_addr})
+                ct = _cr_cc.encrypt(invite, peer_pub, my_priv)
+                topic = _cr_cc.direct_topic(point_addr, member)
+                payload = _j_cc.dumps({"from":point_addr,"to":member,
+                                       "encrypted":True,"body":ct,"conf_invite":True})
+                _rq_cc.post(_step_url_cc,
+                    data=f",publish topic={topic} body={payload}".encode(),
+                    headers={"Content-Type":"text/plain"}, timeout=10)
+                invited.append(member)
+            except Exception as _e:
+                failed.append(f"{member}({_e})")
+        return _j_cc.dumps({"conf_id":conf_id,"members":members,
+                            "invited":invited,"failed":failed,
+                            "note":f"Members: call conf_accept from={point_addr}"},
+                           ensure_ascii=False)
+
+    if verb == "conf_accept":
+        import re as _re_ca, json as _j_ca, requests as _rq_ca, sqlite3 as _sq_ca
+        import sys as _sys_ca; _sys_ca.path.insert(0, "/home/f42agent/f42bbs")
+        import crypto as _cr_ca, keystore as _ks_ca
+        _ks_ca.KEYS_FILE = "/home/f42agent/.f42bbs_keys"
+        m = _re_ca.search(r"from=([^\s]+)", rest)
+        if not m:
+            return "usage: conf_accept from=1:42/X.Y"
+        from_addr = m.group(1).strip()
+        my_priv, _ = _get_point_keypair(point_addr)
+        try:
+            _base_ca = STEP_URL.replace("/step","")
+            r_pub = _rq_ca.get(f"{_base_ca}/raw/net.keys.{from_addr}", timeout=5)
+            sender_pub = _j_ca.loads(r_pub.json()["body"])["pubkey_x25519"]
+            topic = _cr_ca.direct_topic(from_addr, point_addr)
+            con = _sq_ca.connect(os.getenv("F42BBS_DB","/home/f42agent/f42bbs/f42bbs.db"))
+            cur = con.execute(
+                "SELECT raw FROM messages WHERE topic=? ORDER BY created_at DESC LIMIT 20",
+                (topic,))
+            for (raw_str,) in cur.fetchall():
+                env = _j_ca.loads(raw_str)
+                payload = _j_ca.loads(env.get("body","{}"))
+                if not payload.get("conf_invite"): continue
+                if payload.get("from") != from_addr: continue
+                try:
+                    pt = _cr_ca.decrypt(payload["body"], my_priv, sender_pub)
+                    invite = _j_ca.loads(pt)
+                    if invite.get("type") != "conf_invite": continue
+                    _ks_ca.save_conf_key(point_addr, invite["conf_key"])
+                    _ks_ca.save_conf_key(NODE_ADDR, invite["conf_key"])
+                    con.close()
+                    return _j_ca.dumps({"conf_id":invite["conf_id"],
+                                        "status":"accepted","from":from_addr},
+                                       ensure_ascii=False)
+                except Exception:
+                    continue
+            con.close()
+            return f"no conference invite from {from_addr}"
+        except Exception as _e:
+            return f"error: {_e}"
+
+    if verb == "conf_send":
+        import re as _re_cs, json as _j_cs, requests as _rq_cs
+        import sys as _sys_cs; _sys_cs.path.insert(0, "/home/f42agent/f42bbs")
+        import crypto as _cr_cs, keystore as _ks_cs
+        _ks_cs.KEYS_FILE = "/home/f42agent/.f42bbs_keys"
+        m_id   = _re_cs.search(r"conf_id=([^\s]+)", rest)
+        m_body = _re_cs.search(r"body=(.+)", rest, _re_cs.DOTALL)
+        if not m_id or not m_body:
+            return "usage: conf_send conf_id=X body=TEXT"
+        conf_id  = m_id.group(1).strip()
+        body_txt = m_body.group(1).strip()
+        conf_key = _ks_cs.get_conf_key(point_addr, conf_id) or                    _ks_cs.get_conf_key(NODE_ADDR, conf_id)
+        if not conf_key:
+            return f"no key for {conf_id} — call conf_accept first"
+        ct = _cr_cs.conf_encrypt(body_txt, conf_key)
+        payload = _j_cs.dumps({"from":point_addr,"conf_id":conf_id,"encrypted":True,"body":ct})
+        _step_url_cs = STEP_URL if STEP_URL.endswith("/step") else STEP_URL.rstrip("/")+"/step"
+        r = _rq_cs.post(_step_url_cs,
+            data=f",publish topic={conf_id} body={payload}".encode(),
+            headers={"Content-Type":"text/plain"}, timeout=10)
+        parts = r.text.strip().split("%",2)
+        return parts[2].strip() if len(parts)>=3 else r.text.strip()
+
+    if verb == "conf_read":
+        import re as _re_cr, json as _j_cr, sqlite3 as _sq_cr
+        import sys as _sys_cr; _sys_cr.path.insert(0, "/home/f42agent/f42bbs")
+        import crypto as _cr_cr, keystore as _ks_cr
+        _ks_cr.KEYS_FILE = "/home/f42agent/.f42bbs_keys"
+        m = _re_cr.search(r"conf_id=([^\s]+)", rest)
+        if not m:
+            return "usage: conf_read conf_id=X"
+        conf_id  = m.group(1).strip()
+        conf_key = _ks_cr.get_conf_key(point_addr, conf_id) or                    _ks_cr.get_conf_key(NODE_ADDR, conf_id)
+        if not conf_key:
+            return f"no key for {conf_id} — call conf_accept first"
+        try:
+            con = _sq_cr.connect(os.getenv("F42BBS_DB","/home/f42agent/f42bbs/f42bbs.db"))
+            cur = con.execute(
+                "SELECT raw FROM messages WHERE topic=? ORDER BY created_at DESC LIMIT 20",
+                (conf_id,))
+            for (raw_str,) in cur.fetchall():
+                env = _j_cr.loads(raw_str)
+                payload = _j_cr.loads(env.get("body","{}"))
+                ct = payload.get("body","")
+                if not ct: continue
+                try:
+                    pt = _cr_cr.conf_decrypt(ct, conf_key)
+                    sender = payload.get("from","?")
+                    if sender == point_addr:
+                        continue  # echo filter
+                    con.close()
+                    return f"[from {sender}] {pt}"
+                except Exception:
+                    continue
+            con.close()
+            return f"no new messages in {conf_id}"
+        except Exception as _e:
+            return f"error: {_e}"
+
+    if verb == "conf_invite":
+        import re as _re_ci, json as _j_ci, requests as _rq_ci
+        import sys as _sys_ci; _sys_ci.path.insert(0, "/home/f42agent/f42bbs")
+        import crypto as _cr_ci, keystore as _ks_ci
+        _ks_ci.KEYS_FILE = "/home/f42agent/.f42bbs_keys"
+        m_id  = _re_ci.search(r"conf_id=([^\s]+)", rest)
+        m_mem = _re_ci.search(r"members=([^\s]+)", rest)
+        if not m_id or not m_mem:
+            return "usage: conf_invite conf_id=X members=1:42/X.Y,1:42/X.Z"
+        conf_id = m_id.group(1).strip()
+        members = [a.strip() for a in m_mem.group(1).split(",") if a.strip()]
+        conf_key = _ks_ci.get_conf_key(point_addr, conf_id) or \
+                   _ks_ci.get_conf_key(NODE_ADDR, conf_id)
+        if not conf_key:
+            return f"no key for {conf_id} — only organizer can invite"
+        my_priv, _ = _get_point_keypair(point_addr)
+        _base_ci = STEP_URL.replace("/step", "")
+        _step_url_ci = STEP_URL if STEP_URL.endswith("/step") else STEP_URL.rstrip("/")+"/step"
+        invited, failed = [], []
+        for member in members:
+            if member == point_addr:
+                invited.append(member); continue
+            try:
+                r_pub = _rq_ci.get(f"{_base_ci}/raw/net.keys.{member}", timeout=5)
+                peer_pub = _j_ci.loads(r_pub.json()["body"])["pubkey_x25519"]
+                invite = _j_ci.dumps({"type":"conf_invite","conf_id":conf_id,
+                                      "conf_key":conf_key,"from":point_addr})
+                ct = _cr_ci.encrypt(invite, peer_pub, my_priv)
+                topic = _cr_ci.direct_topic(point_addr, member)
+                payload = _j_ci.dumps({"from":point_addr,"to":member,
+                                       "encrypted":True,"body":ct,"conf_invite":True})
+                _rq_ci.post(_step_url_ci,
+                    data=f",publish topic={topic} body={payload}".encode(),
+                    headers={"Content-Type":"text/plain"}, timeout=10)
+                invited.append(member)
+            except Exception as _e:
+                failed.append(f"{member}({str(_e)[:40]})")
+        return _j_ci.dumps({"conf_id":conf_id,"invited":invited,"failed":failed,
+                            "note":f"Members: call conf_accept from={point_addr}"},
+                           ensure_ascii=False)
 
     return f"unknown command: {verb}\ntype 'help' for list"
 
@@ -313,7 +491,7 @@ AUTHENTICATION:
   bbs_claim(otp="word word word word") → session_id + point_addr
   bbs_step(session_id, cmd)            → result + new session_id (sliding)
 
-  CRITICAL: each bbs_step returns a NEW session_id. Always use the latest one.
+  CRITICAL: each bbs_step() returns a NEW session_id — save it and use it in the NEXT call. The old session_id is immediately invalid. This is a security feature, not a bug.
   Session expired? → ask operator for new OTP via f42bbs-admin genotp <addr>
 
 COMMANDS:
