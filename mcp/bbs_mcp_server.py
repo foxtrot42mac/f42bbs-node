@@ -420,8 +420,9 @@ def execute(cmd: str, point_addr: str) -> str:
         try:
             con = _sq_cr.connect(os.getenv("F42BBS_DB","/home/f42agent/f42bbs/f42bbs.db"))
             cur = con.execute(
-                "SELECT raw FROM messages WHERE topic=? ORDER BY created_at DESC LIMIT 20",
+                "SELECT raw FROM messages WHERE topic=? ORDER BY created_at DESC LIMIT 50",
                 (conf_id,))
+            results = []
             for (raw_str,) in cur.fetchall():
                 env = _j_cr.loads(raw_str)
                 payload = _j_cr.loads(env.get("body","{}"))
@@ -432,11 +433,16 @@ def execute(cmd: str, point_addr: str) -> str:
                     sender = payload.get("from","?")
                     if sender == point_addr:
                         continue  # echo filter
-                    con.close()
-                    return f"[from {sender}] {pt}"
+                    # Filter bot messages
+                    if sender.endswith(".0"):
+                        continue
+                    results.append(f"[{sender}] {pt}")
+                    if len(results) >= 5: break
                 except Exception:
                     continue
             con.close()
+            if results:
+                return "\n---\n".join(reversed(results))
             return f"no new messages in {conf_id}"
         except Exception as _e:
             return f"error: {_e}"

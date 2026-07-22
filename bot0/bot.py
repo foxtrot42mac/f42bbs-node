@@ -276,7 +276,11 @@ def handle_direct(msg: str, from_addr: str):
 # ── CONF MODE — plugin gateway ────────────────────────────────────────────────
 
 def handle_conf(msg: str, from_addr: str, conf_id: str, conf_key: str) -> str:
-    parts = msg.strip().split(None, 2)
+    # Plugin commands require "!" prefix to avoid noise in conf
+    if not msg.strip().startswith("!"):
+        return ""
+    msg = msg.strip()[1:].strip()
+    parts = msg.split(None, 2)
     if not parts:
         return ""
     plugin_name = parts[0].lower()
