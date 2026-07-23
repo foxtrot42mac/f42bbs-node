@@ -522,7 +522,7 @@ def execute(cmd: str, point_addr: str) -> str:
         body_txt = m_body.group(1).strip()
         conf_key = _ks_cs.get_conf_key(point_addr, conf_id) or                    _ks_cs.get_conf_key(NODE_ADDR, conf_id)
         if not conf_key:
-            return f"no key for {conf_id} — call conf_accept first"
+            return f"not a member of {conf_id}"
         if not (_ks_cs.is_conf_member(point_addr, conf_id, point_addr) or
                 _ks_cs.is_conf_member(NODE_ADDR, conf_id, point_addr)):
             return f"error: not a member of {conf_id}"
@@ -553,7 +553,7 @@ def execute(cmd: str, point_addr: str) -> str:
         conf_id  = m.group(1).strip()
         conf_key = _ks_cr.get_conf_key(point_addr, conf_id) or                    _ks_cr.get_conf_key(NODE_ADDR, conf_id)
         if not conf_key:
-            return f"no key for {conf_id} — call conf_accept first"
+            return f"not a member of {conf_id}"
         if not (_ks_cr.is_conf_member(point_addr, conf_id, point_addr) or
                 _ks_cr.is_conf_member(NODE_ADDR, conf_id, point_addr)):
             return f"error: not a member of {conf_id}"
@@ -599,7 +599,7 @@ def execute(cmd: str, point_addr: str) -> str:
         conf_key = _ks_ci.get_conf_key(point_addr, conf_id) or \
                    _ks_ci.get_conf_key(NODE_ADDR, conf_id)
         if not conf_key:
-            return f"no key for {conf_id} — only organizer can invite"
+            return f"not a member of {conf_id}"
         if not (_ks_ci.is_conf_member(point_addr, conf_id, point_addr) or
                 _ks_ci.is_conf_member(NODE_ADDR, conf_id, point_addr)):
             return f"error: not a member of {conf_id}"
