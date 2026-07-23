@@ -371,16 +371,20 @@ def _http_fanout(env):
     except Exception:
         db_peers = []
     all_peers = list(dict.fromkeys(db_peers + _peer_urls))  # dedup, DB first
+    import requests as _rq_fanout, json as _j_fanout
     for peer_url in all_peers:
-        ec = _copy.deepcopy(env)
-        ec.hops = env.hops + [F42BBS_NODE_ID]
-        # B3: sign envelope before sending to peer
-        if _ED25519_PRIV:
-            import json as _j_fanout
-            env_dict = _signing.sign_envelope(ec.emit(), _ED25519_PRIV)
-            from envelope import Envelope as _Env
-            ec = _Env.from_dict(env_dict)
-        _http_transport_obj.send(ec, peer_url)
+        try:
+            import copy as _cp
+            ec = _cp.deepcopy(env)
+            ec.hops = env.hops + [F42BBS_NODE_ID]
+            env_dict = ec.emit()
+            if _ED25519_PRIV:
+                env_dict = _signing.sign_envelope(env_dict, _ED25519_PRIV)
+            print(f"[fanout bbs2] {peer_url}", flush=True)
+            r = _rq_fanout.post(peer_url, json=env_dict, timeout=5)
+            print(f"[fanout bbs2] -> {r.status_code}", flush=True)
+        except Exception as _fe:
+            print(f"[fanout bbs2] {peer_url} ERROR: {_fe}", flush=True)
 _daemon._fanout = _http_fanout
 init_http_transport(_daemon, F42BBS_KEY)
 
