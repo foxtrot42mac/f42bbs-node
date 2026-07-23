@@ -139,17 +139,45 @@ def init_keys(my_addr: str) -> dict:
 
 # ── confs ────────────────────────────────────────────────────────────────────
 
-def save_conf_key(my_addr: str, conf_key_b64: str) -> str:
+def save_conf_key(my_addr: str, conf_key_b64: str, members: list = None) -> str:
     import hashlib
     cid = "conf-" + hashlib.sha256(base64.b64decode(conf_key_b64)).hexdigest()[:16]
     data = load_or_init(my_addr)
-    data["confs"][cid] = conf_key_b64
+    existing = data["confs"].get(cid)
+    if isinstance(existing, dict) and members is None:
+        members = existing.get("members", [])
+    data["confs"][cid] = {"key": conf_key_b64, "members": members or []}
     _save(data)
     return cid
 
 def get_conf_key(my_addr: str, conf_id: str) -> Optional[str]:
     data = load_or_init(my_addr)
-    return data["confs"].get(conf_id)
+    entry = data["confs"].get(conf_id)
+    if entry is None:
+        return None
+    if isinstance(entry, str):
+        return entry  # legacy format, no membership info
+    return entry.get("key")
+
+def get_conf_members(my_addr: str, conf_id: str) -> Optional[list]:
+    """Returns None if unknown or legacy (no membership tracked — deny by default)."""
+    data = load_or_init(my_addr)
+    entry = data["confs"].get(conf_id)
+    if isinstance(entry, dict):
+        return entry.get("members", [])
+    return None  # legacy entries: no membership info available
+
+def is_conf_member(my_addr: str, conf_id: str, requester_addr: str) -> bool:
+    members = get_conf_members(my_addr, conf_id)
+    if members is None:
+        return False  # legacy/unknown — deny by default, fail closed
+    return requester_addr in members
+
+def list_my_confs(my_addr: str) -> list:
+    """List conf_ids where my_addr is an actual member (single source of truth)."""
+    data = load_or_init(my_addr)
+    return [cid for cid in data.get("confs", {}).keys()
+            if is_conf_member(my_addr, cid, my_addr)]
 
 def remove_conf_key(my_addr: str, conf_id: str) -> None:
     data = load_or_init(my_addr)

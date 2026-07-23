@@ -161,11 +161,18 @@ def execute_command(command: str) -> str:
         raw_envelope = json.dumps(env_dict)
         db.store_msg(msg_id, "POST", F42BBS_NODE_ID, topic, raw_envelope)
         
-        for peer_url in peer_urls:
+        try:
+            dyn_peers = [p['address'] for p in db.get_peers() if p.get('address')]
+        except Exception:
+            dyn_peers = []
+        all_peers = list(dict.fromkeys(dyn_peers + peer_urls))
+        print(f'[fanout] peers={all_peers} topic={topic}', flush=True)
+        for peer_url in all_peers:
             try:
-                requests.post(peer_url, json=envelope.emit(), timeout=5)
-            except Exception:
-                pass
+                r = requests.post(peer_url, json=env_dict, timeout=5)
+                print(f'[fanout] {peer_url} -> {r.status_code}', flush=True)
+            except Exception as _fe:
+                print(f'[fanout] {peer_url} -> ERROR: {_fe}', flush=True)
         
         return f"published to topic {topic}"
     
