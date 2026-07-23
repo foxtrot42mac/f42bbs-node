@@ -28,6 +28,7 @@ DATA_DIR   = os.getenv("F42BBS_DATA_DIR", "/var/lib/f42bbs")
 KEYS_FILE_PATH    = os.getenv("F42BBS_KEYS", "/var/lib/f42bbs/.f42bbs_keys")
 GENESIS_FILE_PATH = os.getenv("F42BBS_GENESIS", "/var/lib/f42bbs/.f42bbs_genesis")
 DB_PATH_DEFAULT   = os.getenv("F42BBS_DB", os.path.join(DATA_DIR, "f42bbs.db"))
+PUBLIC_SERVER_URL = os.getenv("F42BBS_PUBLIC_URL", "")  # explicit override, e.g. https://foxtrot42.org
 NODE_ADDR  = os.getenv("F42BBS_NODE_ID",  "1:42/1")
 STEP_URL   = os.getenv("F42BBS_STEP_URL", "http://localhost:8001")
 PORT       = int(os.getenv("BBS_MCP_PORT", "8006"))
@@ -828,7 +829,7 @@ def mcp():
                     point_addr   = addr,
                     node         = NODE_ADDR,
                     generated_at = datetime.datetime.utcnow().isoformat() + "Z",
-                    server_url   = "https://tango4004.com",
+                    server_url   = PUBLIC_SERVER_URL or ("https://tango4004.com" if NODE_ADDR == "1:42/2" else "https://foxtrot42.org"),
                     initial_sid  = sid,
                     priv_hex     = priv_hex,
                 )
