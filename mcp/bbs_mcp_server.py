@@ -844,10 +844,17 @@ def mcp():
                 }, ensure_ascii=False)
 
         elif name == "bbs_step":
-            sid     = args.get("session_id","").strip()
-            cmd     = args.get("cmd","").strip()
-            ts      = int(args.get("ts", 0))
-            sig     = args.get("sig","").strip()
+            # .get(key, default) only applies default when key is ABSENT --
+            # an explicit JSON null still comes through as None and crashes
+            # .strip()/int() with AttributeError/TypeError -> uncaught 500.
+            # Coerce every field defensively before use.
+            sid     = str(args.get("session_id") or "").strip()
+            cmd     = str(args.get("cmd") or "").strip()
+            try:
+                ts  = int(args.get("ts") or 0)
+            except (TypeError, ValueError):
+                ts  = 0
+            sig     = str(args.get("sig") or "").strip()
             addr, new_sid, err_msg = consume_session_signed(sid, cmd, ts, sig)
             if not addr:
                 text = f"error: {err_msg} — use genotp + bbs_claim"
