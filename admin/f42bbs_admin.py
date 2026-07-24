@@ -41,7 +41,7 @@ def _otp_hash(otp): return hashlib.sha256(otp.encode()).hexdigest()
 
 def cmd_addpoint(args):
     """Create new point on this node. Node holds keypair."""
-    import keystore, crypto
+    import keystore, crypto, signing
     keystore.KEYS_FILE    = KEYS_FILE
     keystore.GENESIS_FILE = GENESIS_FILE
 
@@ -53,19 +53,33 @@ def cmd_addpoint(args):
     n    = max(used, default=0) + 1
     addr = f"{prefix}{n}"
 
-    # Generate keypair — stored on node
+    # x25519 for encryption (sp/conf) -- unchanged
     priv, pub = crypto.keypair_generate()
 
+    # ed25519 for signing (digests, §4/§5 of Digest Broadcast spec) --
+    # SEPARATE keypair, different primitive, generated explicitly here
+    # (not lazily on first read -- a point's signing identity must be
+    # long-lived and predictable, not a silent side effect). Schema v2,
+    # same shape as node-level .f42bbs_keys ed25519/x25519 split.
+    from nacl.signing import SigningKey
+    import base64 as _b64_ap
+    sk = SigningKey.generate()
+    sig_priv = _b64_ap.b64encode(bytes(sk)).decode()
+    sig_pub  = _b64_ap.b64encode(bytes(sk.verify_key)).decode()
+
     points[addr] = {
+        "schema":      2,
         "x25519_pub":  pub,
         "x25519_priv": priv,   # stored on node
+        "ed25519_pub":  sig_pub,
+        "ed25519_priv": sig_priv,
         "label":       args.label or addr,
         "role":        getattr(args, "role", "user") or "user",
         "created_at":  time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     _save(POINTS_FILE, points)
 
-    # Publish pub to net.keys.<addr> via step
+    # Publish x25519 pub to net.keys.<addr> via step (existing mechanism, unchanged)
     try:
         import requests as _req
         step_url = os.getenv("F42BBS_STEP_URL", "http://localhost:8001")
@@ -75,8 +89,36 @@ def cmd_addpoint(args):
                       data=f",publish topic=net.keys.{addr} body={body}".encode(),
                       headers={"Content-Type": "text/plain"}, timeout=10)
         pub_ok = "published" in r.text
-    except Exception as e:
+    except Exception:
         pub_ok = False
+
+    # Publish ed25519 pub to net.sigkeys.<NODE_ADDR> — a SINGLE list per
+    # node (not per-point), covering all of this node's points, signed
+    # by the NODE's own ed25519 key. This is the vouching mechanism from
+    # the Digest Broadcast spec §4/§5 (Doo, 2026-07-24): the receiver
+    # verifies the node signed the list, not each point individually --
+    # a point's signature is only as trustworthy as the node vouching
+    # for it, and points are ephemeral (Doo: "like a browser tab").
+    sigkeys_ok = False
+    try:
+        keystore.KEYS_FILE    = KEYS_FILE
+        keystore.GENESIS_FILE = GENESIS_FILE
+        node_priv, _ = keystore.get_ed25519(NODE_ADDR)
+
+        sigkeys_topic = f"net.sigkeys.{NODE_ADDR}"
+        sigkeys_list = {
+            p: v["ed25519_pub"] for p, v in points.items()
+            if v.get("ed25519_pub")
+        }
+        payload = {"node": NODE_ADDR, "points": sigkeys_list,
+                   "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        signed_payload = signing.sign_dict(payload, node_priv, sig_field="sig")
+        r2 = _req.post(f"{step_url}/step",
+                       data=f",publish topic={sigkeys_topic} body={json.dumps(signed_payload)}".encode(),
+                       headers={"Content-Type": "text/plain"}, timeout=10)
+        sigkeys_ok = "published" in r2.text
+    except Exception:
+        sigkeys_ok = False
 
     # Generate initial OTP
     otp = _genotp(addr)
@@ -85,6 +127,7 @@ def cmd_addpoint(args):
     print(f"  label:   {args.label or addr}")
     print(f"  pub:     {pub[:24]}...")
     print(f"  net.keys published: {pub_ok}")
+    print(f"  net.sigkeys published: {sigkeys_ok}")
     print()
     print(f"Initial OTP (valid 5 min):")
     print(f"  {otp}")
