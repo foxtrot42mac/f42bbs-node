@@ -211,8 +211,12 @@ def consume_session_signed(sid: str, cmd: str, ts: int, sig_hex: str):
             pub.verify(bytes.fromhex(sig_hex), (sid + ":" + cmd + ":" + str(ts)).encode())
         except InvalidSignature:
             return None, "", "invalid signature"
-        except Exception as e:
-            return None, "", f"sig error: {e}"
+        except Exception:
+            # Catches non-hex sig (int/dict/malformed string via fromhex()),
+            # wrong-length sig, etc. Do not leak the raw exception text
+            # (e.g. fromhex()'s "non-hexadecimal number found at position N")
+            # -- it's an implementation detail, not something the caller needs.
+            return None, "", "invalid signature"
     # SID не ротируется — подпись гарантирует безопасность
     return entry["addr"], sid, ""
 
