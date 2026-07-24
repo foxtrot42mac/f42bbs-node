@@ -202,7 +202,10 @@ def consume_session_signed(sid: str, cmd: str, ts: int, sig_hex: str):
     if ts and abs(now - ts) > 60:
         return None, "", f"timestamp out of window: {ts} vs {now}"
     client_pub_hex = entry.get("client_pub")
-    if client_pub_hex and sig_hex:
+    if client_pub_hex:
+        # Signature is mandatory if session was created with a key
+        if not sig_hex:
+            return None, "", "signature required — run the session script"
         try:
             pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(client_pub_hex))
             pub.verify(bytes.fromhex(sig_hex), (sid + ":" + cmd + ":" + str(ts)).encode())
